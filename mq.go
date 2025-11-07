@@ -8,8 +8,10 @@ typedef struct _sysv_msg {
 } sysv_msg;
 */
 import "C"
-import "errors"
-import "runtime"
+import (
+	"errors"
+	"runtime"
+)
 
 // Represents the message queue
 type MessageQueue struct {
@@ -49,6 +51,10 @@ type QueueConfig struct {
 
 	Path   string // The path to a file to obtain a SysV IPC key if Key is not set
 	ProjId int    // ProjId for ftok to generate a SysV IPC key if Key is not set
+
+	// For connecting to existing queue by ID
+	QueueID       int  // Existing message queue ID (msqid)
+	UseExistingID bool // If true, use QueueID instead of creating/opening by key
 }
 
 // NewMessageQueue returns an instance of the message queue given a QueueConfig.
@@ -72,6 +78,18 @@ func NewMessageQueue(config *QueueConfig) (*MessageQueue, error) {
 	})
 
 	return mq, err
+}
+
+// NewMessageQueueByID connects to an existing message queue using its ID (msqid).
+// This is useful when you already know the queue ID and want to connect directly
+// without using a key.
+func NewMessageQueueByID(queueID int, maxSize int) (*MessageQueue, error) {
+	config := &QueueConfig{
+		QueueID:       queueID,
+		MaxSize:       maxSize,
+		UseExistingID: true,
+	}
+	return NewMessageQueue(config)
 }
 
 // Sends a []byte message to the queue of the type passed as the second argument.
@@ -137,6 +155,23 @@ func (mq *MessageQueue) Close() {
 }
 
 func (mq *MessageQueue) connect() (err error) {
+	// If UseExistingID is true, connect to existing queue by ID
+	if mq.config.UseExistingID {
+		if mq.config.QueueID <= 0 {
+			return errors.New("invalid queue ID: must be positive")
+		}
+
+		// Verify the queue exists by attempting to stat it
+		_, err = ipcStat(mq.config.QueueID)
+		if err != nil {
+			return errors.New("failed to connect to queue ID " + string(rune(mq.config.QueueID)) + ": " + err.Error())
+		}
+
+		mq.id = mq.config.QueueID
+		return nil
+	}
+
+	// Original behavior: create/open by key
 	if mq.config.Key == 0 {
 		mq.config.Key, err = ftok(mq.config.Path, mq.config.ProjId)
 
